@@ -7,7 +7,7 @@ import (
 )
 
 const MultithreadedSort = 100
-const ChunkSize = 100
+const ChunkSize = 20
 var pool = sync.Pool{
 	New: func() interface{} {
 		return &sortChunk{}
@@ -25,7 +25,7 @@ func Stable(data sort.Interface) {
 }
 
 func stdLibSort(ifc sort.Interface) {
-	sort.Sort(ifc)
+	sort.Stable(ifc)
 }
 
 func runner(closer chan struct{}, sorter chan *sortChunk) {
