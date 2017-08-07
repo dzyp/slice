@@ -1,3 +1,13 @@
+/*
+Package slice takes the stable sorting algorithm found in the standard library
+and makes it concurrent.  It follows the same paradigm as the standard library
+in that a large slice is broken down into small sub slices with each slice
+being insertion sorted.  These smaller slices are then merged iteratively via
+symmetric comparison.
+
+In really large arrays, this algorithm can't result in a doubling of
+performance.
+ */
 package slice
 
 import (
