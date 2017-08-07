@@ -1,6 +1,7 @@
 package slice
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -38,24 +39,17 @@ func newStruct(key, value int) *testStruct {
 	}
 }
 
-func TestStdLibSort(t *testing.T) {
-	s1, s2, s3, s4 := newStruct(1, 1), newStruct(2, 2), newStruct(3, 4), newStruct(3, 3)
-	test := structs{s2, s3, s4, s1}
-	stdLibSort(test)
-	assert.Equal(t, structs{s1, s2, s3, s4}, test)
-}
-
 func TestMultithreadedSortEven(t *testing.T) {
 	s1, s2, s3, s4 := newStruct(1, 1), newStruct(2, 2), newStruct(3, 4), newStruct(3, 3)
 	test := structs{s2, s3, s4, s1}
-	multithreadedThreadedSymSort(test)
+	multithreadedSymSort(test)
 	assert.Equal(t, structs{s1, s2, s3, s4}, test)
 }
 
 func TestMultithreadedSortOdd(t *testing.T) {
 	s1, s2, s3, s4, s5 := newStruct(1, 1), newStruct(2, 2), newStruct(3, 4), newStruct(3, 3), newStruct(4, 5)
 	test := structs{s2, s5, s3, s4, s1}
-	multithreadedThreadedSymSort(test)
+	multithreadedSymSort(test)
 	assert.Equal(t, structs{s1, s2, s3, s4, s5}, test)
 }
 
@@ -68,7 +62,7 @@ func BenchmarkStdLib(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		stdLibSort(test)
+		sort.Stable(test)
 		test.Reverse()
 	}
 }
@@ -82,7 +76,7 @@ func BenchmarkMultithreaded(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		multithreadedThreadedSymSort(test)
+		multithreadedSymSort(test)
 		test.Reverse()
 	}
 }

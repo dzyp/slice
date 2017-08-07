@@ -1,34 +1,50 @@
 package slice
 
 import (
+	"runtime"
 	"sort"
 	"sync"
-	"runtime"
 )
 
-const MultithreadedSort = 100
+// MultithreadedSortThreshold determines how long a slice needs to be before
+// the multithreaded algorithm is used.  There is some overhead to the
+// goroutines, so for really small slices the std lib sort is used.
+const MultithreadedSortThreshold = 100
+
+// ChunkSize defines the size of the subslices that are sent to the insertion
+// sort algorithm.  20-30 is a good number with best empirical results.
 const ChunkSize = 20
+
+// pool is used to hold sort chunks to reduce allocations as much as possible.
+// Moving to a different pattern of using defined memory locations with an array
+// is a good target for future work.
 var pool = sync.Pool{
 	New: func() interface{} {
 		return &sortChunk{}
 	},
 }
 
-
+// Stable performs a multithreaded stable sort, if the slice is long enough
+// to warrant such an approach.  Otherwise, performs a standard single-threaded
+// sort using the std lib.  Also uses the standard library sort if there is only
+// one cpu in the machine, not much use there.  Only runtime.NumCPU is checked
+// here as more recent versions of go automatically set GOMAXPROCS to this
+// value.
 func Stable(data sort.Interface) {
-	if data.Len() < MultithreadedSort {
-		stdLibSort(data)
+	if data.Len() < MultithreadedSortThreshold || runtime.NumCPU() == 1 {
+		sort.Stable(data)
 		return
 	}
 
-	multithreadedThreadedSymSort(data)
+	multithreadedSymSort(data)
 }
 
-func stdLibSort(ifc sort.Interface) {
-	sort.Stable(ifc)
-}
-
-func runner(closer chan struct{}, sorter chan *sortChunk) {
+// runner is the asynchronous function responsible for performing merging and
+// sorting.  This function returns when closer is closed.  Any sortChunk structs
+// received by the runner with a mid of 0 will be assumed to be a sort command
+// and will take the insertion sort code path.  A non-zero mid will cause a
+// merge.
+func runner(wg *sync.WaitGroup, data sort.Interface, closer chan struct{}, sorter chan *sortChunk) {
 	for {
 		select {
 		case <- closer:
@@ -36,42 +52,49 @@ func runner(closer chan struct{}, sorter chan *sortChunk) {
 		case toSort :=<- sorter:
 			if toSort.mid == 0 {
 				insertionSort(
-					toSort.data, toSort.start, toSort.stop,
+					data, toSort.start, toSort.stop,
 				)
-				toSort.wg.Done()
+				wg.Done()
 				pool.Put(toSort)
 				continue
 			}
 
 			symMerge(
-				toSort.data,
+				data,
 				toSort.start,
 				toSort.mid,
 				toSort.stop,
 			)
-			toSort.wg.Done()
+			wg.Done()
 			pool.Put(toSort)
 		}
 	}
 }
 
-func newChunk(wg *sync.WaitGroup, data sort.Interface, start, mid, stop int) *sortChunk {
+// newChunk returns a sortChunk with the provided values.  The sortChunk may or
+// may not be reused.
+func newChunk(start, mid, stop int) *sortChunk {
 	chunk := pool.Get().(*sortChunk)
-	chunk.wg = wg
-	chunk.data = data
 	chunk.start = start
 	chunk.mid = mid
 	chunk.stop = stop
 	return chunk
 }
 
+// sortChunk is used to send data to the runners regarding which subslices to
+// act upon.
 type sortChunk struct {
-	wg *sync.WaitGroup
-	data sort.Interface
 	start, mid, stop int
 }
 
-func multithreadedThreadedSymSort(data sort.Interface) {
+// multithreadedSymSort copies the sort logic from the standard library but
+// parallelizes it.  This is used if the len of the slice is sufficient.  The
+// symmetrical merge algorithm is a good target for concurrency.  The slice
+// is broken down into sub slices which are sorted concurrently using the
+// standard library's insertion sort.  The resulting subslices are then merged
+// resulting in a stable sort done concurrently.  This can also be done without
+// any modification to the sort.Interface interface.
+func multithreadedSymSort(data sort.Interface) {
 	closer := make(chan struct{}) // used to close goroutines
 	defer close(closer)
 
@@ -79,41 +102,49 @@ func multithreadedThreadedSymSort(data sort.Interface) {
 
 	// 1) Calculate how many chunks we're going to need and prepare
 	// go routines.
-	numChunks := data.Len() / blockSize + 1
-	chunks := make(chan *sortChunk, numChunks)
+	numChunks := data.Len() / blockSize + 1 // how many sub slices need to
+	// be sorted the buffer size here needs to be high enough to not be too
+	// blocking to the insertion loop
+	chunks := make(chan *sortChunk, runtime.NumCPU() * 400)
+	var wg sync.WaitGroup
+	// start the runners, num cpu is usually a pretty good bet
 	for i := 0; i < runtime.NumCPU(); i++ {
-		go runner(closer, chunks)
+		go runner(&wg, data, closer, chunks)
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(cap(chunks))
+	wg.Add(numChunks)
 	a, b, n := 0, blockSize, data.Len()
 	for b <= n {
-		chunks <- newChunk(&wg, data, a, 0, b)
+		chunks <- newChunk(a, 0, b)
 		a = b
 		b += blockSize
 	}
 
-	chunks <- newChunk(&wg, data, a, 0, n)
+	chunks <- newChunk(a, 0, n)
 
-	wg.Wait()
+	wg.Wait() // indicates all the subslices are sorted, ready to be merged
 
+	// all subslices are then merged iteratively, starting with the smallest
+	// block size merge and ending when nothing is left to be merged
 	for blockSize < n {
 		a, b = 0, 2*blockSize
+		wg.Add(n / (2 * blockSize))
 		for b <= n {
-			wg.Add(1)
-			chunks <- newChunk(&wg, data, a, a+blockSize, b)
+			chunks <- newChunk(a, a+blockSize, b)
 			a = b
 			b += 2 * blockSize
 		}
 		if m := a + blockSize; m < n {
 			wg.Add(1)
-			chunks <- newChunk(&wg, data, a, m, n)
+			chunks <- newChunk(a, m, n)
 		}
 		blockSize *= 2
 		wg.Wait()
 	}
 }
+
+// All functions below are copied/pasted from the standard library as of
+// 1.8.3.
 
 func swapRange(data sort.Interface, a, b, n int) {
 	for i := 0; i < n; i++ {
