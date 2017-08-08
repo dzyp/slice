@@ -8,7 +8,7 @@ symmetric comparison.
 In really large arrays, this algorithm can't result in a doubling of
 performance.
  */
-package slice
+package sort
 
 import (
 	"runtime"
